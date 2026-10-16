@@ -13,7 +13,13 @@ npm run dev        # development server
 npm run build && npx vite preview
 ```
 
-Open the address it prints (use `localhost`; opening `index.html` as a file won't work).
+Open the address it prints (use `localhost`).
+
+**Play without a server:** `npm run build` produces a single self-contained `dist/index.html`
+(everything inlined), which you can open by double-clicking it or share as one file. Don't open the
+*source* `index.html` in the project root as a file: browsers won't run the TypeScript source that way.
+
+**Play online:** https://kllloh.github.io/gnome-strike/ (auto-deployed from `main`).
 
 ## Playing
 

@@ -49,6 +49,33 @@
   <div id="classes" style="display:flex;gap:10px;margin:6px 0 14px;flex-wrap:wrap;justify-content:center;max-width:920px"></div>
   <p>WASD move · Space jump · Shift walk · Mouse aim · Click shoot · Right-click scope · R reload · G frag · V smoke · B buy · M voices<br>Switching sides restarts the match</p>
 </div>
+<script>
+  // Start-up check: if the game fails to boot, say why instead of showing a dead page.
+  (function () {
+    function show(msg) {
+      var d = document.getElementById('boot-error');
+      if (!d) {
+        d = document.createElement('div');
+        d.id = 'boot-error';
+        d.style.cssText = 'position:fixed;z-index:100;left:16px;right:16px;bottom:16px;padding:12px 16px;background:#3a0a0a;color:#ffd6d6;font:14px monospace;white-space:pre-wrap;border:1px solid #f66;border-radius:6px';
+        document.body.appendChild(d);
+      }
+      d.textContent = msg;
+    }
+    window.addEventListener('error', function (e) {
+      if (e.target && e.target.tagName === 'SCRIPT') show('Could not load the game script (' + (e.target.src || 'inline') + ').\nIf you opened this file from disk, use dist/index.html from "npm run build", or run "npm run dev".');
+      else show('The game hit an error while starting:\n' + (e.message || e) + (e.filename ? '\n' + e.filename + ':' + e.lineno : ''));
+    }, true);
+    window.addEventListener('unhandledrejection', function (e) {
+      show('The game hit an error while starting:\n' + (e.reason && e.reason.message ? e.reason.message : e.reason));
+    });
+    setTimeout(function () {
+      if (!window.__gs && !document.getElementById('boot-error')) {
+        show('The game did not start.\nIf you opened index.html straight from the source folder, run "npm run dev" instead,\nor open the built dist/index.html, or play at https://kllloh.github.io/gnome-strike/');
+      }
+    }, 3000);
+  })();
+</script>
 <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

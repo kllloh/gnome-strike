@@ -1,6 +1,10 @@
 import { defineConfig } from 'vite';
+import { viteSingleFile } from 'vite-plugin-singlefile';
 
-// Relative asset paths, so the built game works from any sub-path (GitHub Pages, itch.io, ...).
+// The build is a single self-contained index.html (script and styles inlined), so the game also
+// runs when you just double-click dist/index.html - browsers refuse separate module files on file://.
+// Relative base keeps it working from any sub-path (GitHub Pages, itch.io, ...).
 export default defineConfig({
   base: './',
+  plugins: [viteSingleFile()],
 });
