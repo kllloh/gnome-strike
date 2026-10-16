@@ -1,0 +1,166 @@
+import * as THREE from 'three';
+
+export interface WeaponDef {
+  id: 'pistol' | 'smg' | 'rifle' | 'shotgun' | 'sniper';
+  name: string;
+  slot: 'primary' | 'secondary';
+  price: number;
+  mag: number;
+  reserve: number;
+  interval: number; // seconds between shots
+  auto: boolean;
+  body: number;
+  head: number;
+  reload: number; // seconds
+  spread: number; // multiplier on the base spread
+  recoil: number; // radians of upward kick per shot
+  pellets?: number; // >1 for shotguns: rays per shot
+  pelletSpread?: number; // extra cone (radians) per pellet
+  scope?: number; // field of view (degrees) while scoped; present only on scoped weapons
+}
+
+export const WEAPONS: Record<WeaponDef['id'], WeaponDef> = {
+  pistol: { id: 'pistol', name: 'Pistol', slot: 'secondary', price: 0, mag: 12, reserve: 48, interval: 0.2, auto: false, body: 22, head: 62, reload: 1.3, spread: 0.7, recoil: 0.016 },
+  smg: { id: 'smg', name: 'SMG', slot: 'primary', price: 1200, mag: 25, reserve: 100, interval: 0.07, auto: true, body: 17, head: 42, reload: 1.6, spread: 1.4, recoil: 0.007 },
+  shotgun: { id: 'shotgun', name: 'Shotgun', slot: 'primary', price: 1800, mag: 6, reserve: 30, interval: 0.85, auto: false, body: 14, head: 28, reload: 2.4, spread: 0.6, recoil: 0.05, pellets: 8, pelletSpread: 0.05 },
+  sniper: { id: 'sniper', name: 'Sniper', slot: 'primary', price: 3200, mag: 5, reserve: 25, interval: 1.3, auto: false, body: 100, head: 250, reload: 2.6, spread: 10, recoil: 0.04, scope: 22 },
+  rifle: { id: 'rifle', name: 'Rifle', slot: 'primary', price: 2700, mag: 30, reserve: 90, interval: 0.09, auto: true, body: 26, head: 70, reload: 1.9, spread: 1, recoil: 0.010 },
+};
+
+/** Gun state plus its blocky first-person viewmodel. */
+export class Weapon {
+  readonly model = new THREE.Group();
+  readonly muzzle = new THREE.Object3D();
+  ammo: number;
+  reserve: number;
+  reloading = false;
+  heat = 0; // sustained-fire inaccuracy, 0..1
+
+  private reloadT = 0;
+  private cool = 0;
+  private kick = 0;
+  private flashT = 0;
+  private flash: THREE.Mesh;
+  private bobT = 0;
+  private readonly base = new THREE.Vector3(0.22, -0.23, -0.42);
+
+  constructor(readonly def: WeaponDef, skin = 0xf0c8a0, sleeve = 0x2f5fb0) {
+    this.ammo = def.mag;
+    this.reserve = def.reserve;
+    const mk = (w: number, h: number, d: number, x: number, y: number, z: number, color: number) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshLambertMaterial({ color }));
+      m.position.set(x, y, z);
+      this.model.add(m);
+      return m;
+    };
+    mk(0.075, 0.1, 0.5, 0, 0, 0, 0x333333); // receiver
+    mk(0.04, 0.04, 0.28, 0, 0.01, -0.38, 0x1e1e1e); // barrel
+    mk(0.06, 0.13, 0.2, 0, -0.02, 0.33, 0x6b4a2f); // stock
+    mk(0.05, 0.16, 0.08, 0, -0.12, 0.04, 0x222222); // magazine
+    mk(0.02, 0.04, 0.02, 0, 0.07, -0.2, 0x111111); // front sight
+    mk(0.09, 0.09, 0.09, 0, -0.07, -0.18, skin); // front hand
+    mk(0.09, 0.09, 0.09, 0, -0.1, 0.14, skin); // rear hand
+    mk(0.11, 0.11, 0.3, 0.03, -0.14, 0.31, sleeve); // sleeve
+    if (def.id === 'sniper') {
+      mk(0.04, 0.04, 0.4, 0, 0.01, -0.75, 0x1e1e1e); // long barrel
+      mk(0.06, 0.06, 0.26, 0, 0.1, -0.08, 0x161616); // scope tube
+      mk(0.075, 0.075, 0.03, 0, 0.1, -0.22, 0x4aa8d8); // front lens
+      mk(0.03, 0.05, 0.03, 0, 0.065, -0.08, 0x161616); // scope mount
+    }
+    this.muzzle.position.set(0, 0.01, def.id === 'sniper' ? -0.96 : -0.55);
+    this.model.add(this.muzzle);
+    this.flash = new THREE.Mesh(
+      new THREE.BoxGeometry(0.08, 0.08, 0.08),
+      new THREE.MeshBasicMaterial({ color: 0xffd060 }),
+    );
+    this.flash.position.set(0, 0.01, def.id === 'sniper' ? -1.0 : -0.6);
+    this.flash.visible = false;
+    this.model.add(this.flash);
+
+    if (def.id === 'shotgun') {
+      mk(0.07, 0.07, 0.22, 0, -0.06, -0.3, 0x6b4a2f); // pump
+      mk(0.05, 0.05, 0.3, 0, -0.025, -0.38, 0x1e1e1e); // second barrel
+    }
+
+    // size/position variants of the same blocky gun
+    if (def.id === 'shotgun') this.model.scale.set(1.15, 1.05, 0.95);
+    if (def.id === 'sniper') this.base.set(0.2, -0.22, -0.4);
+    if (def.id === 'smg') this.model.scale.set(1, 1, 0.78);
+    if (def.id === 'pistol') {
+      this.model.scale.set(0.9, 0.9, 0.5);
+      this.base.set(0.2, -0.2, -0.4);
+    }
+    this.model.position.copy(this.base);
+  }
+
+  get canFire(): boolean {
+    return !this.reloading && this.ammo > 0 && this.cool <= 0;
+  }
+
+  /** Try to fire one round. Returns true if a round left the barrel. */
+  tryFire(): boolean {
+    if (this.reloading || this.cool > 0) return false;
+    if (this.ammo <= 0) {
+      this.startReload();
+      return false;
+    }
+    this.ammo--;
+    this.cool = this.def.interval;
+    this.kick = 1;
+    this.flashT = 0.04;
+    this.heat = Math.min(1, this.heat + 0.1);
+    return true;
+  }
+
+  startReload(): boolean {
+    if (this.reloading || this.ammo === this.def.mag || this.reserve <= 0) return false;
+    this.reloading = true;
+    this.reloadT = 0;
+    return true;
+  }
+
+  cancelReload() {
+    this.reloading = false;
+  }
+
+  refill() {
+    this.ammo = this.def.mag;
+    this.reserve = this.def.reserve;
+    this.reloading = false;
+    this.heat = 0;
+  }
+
+  /** Spread (radians) given how the player is moving. */
+  spread(horizSpeed: number, onGround: boolean, scoped = false): number {
+    if (scoped && this.def.scope) return 0.0004 + (horizSpeed / 5.4) * 0.01 + (onGround ? 0 : 0.06);
+    return (0.0015 + this.heat * 0.012 + (horizSpeed / 5.4) * 0.014 + (onGround ? 0 : 0.05)) * this.def.spread;
+  }
+
+  update(dt: number, horizSpeed: number) {
+    this.cool -= dt;
+    this.heat = Math.max(0, this.heat - dt * 1.6);
+    this.kick = Math.max(0, this.kick - dt * 12);
+    this.flashT -= dt;
+    this.flash.visible = this.flashT > 0;
+
+    if (this.reloading) {
+      this.reloadT += dt;
+      if (this.reloadT >= this.def.reload) {
+        const take = Math.min(this.def.mag - this.ammo, this.reserve);
+        this.ammo += take;
+        this.reserve -= take;
+        this.reloading = false;
+      }
+    }
+    const rp = this.reloading ? Math.sin(Math.min(1, this.reloadT / this.def.reload) * Math.PI) : 0;
+
+    this.bobT += dt * horizSpeed * 2.2;
+    const bobAmt = Math.min(1, horizSpeed / 5.4);
+    this.model.position.set(
+      this.base.x + Math.sin(this.bobT) * 0.008 * bobAmt,
+      this.base.y + Math.abs(Math.cos(this.bobT)) * 0.008 * bobAmt - rp * 0.14,
+      this.base.z + this.kick * 0.05,
+    );
+    this.model.rotation.set(this.kick * 0.05 - rp * 0.5, 0, rp * 0.5);
+  }
+}
