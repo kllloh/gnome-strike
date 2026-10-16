@@ -5,6 +5,7 @@ import type { Player } from './player';
 import type { Effects } from './fx';
 import type { Sound } from './audio';
 import type { Grenades } from './grenades';
+import type { Critter } from './critters';
 import { createFighter, GNOME_SCALE as S, type Faction, type GnomeModel } from './gnome';
 import { CLASSES, type ClassId } from './classes';
 
@@ -19,17 +20,21 @@ export interface BotContext {
   sound: Sound;
   bots: Bot[];
   grenades: Grenades;
+  critters: Critter[];
   onKill: (killer: string, victim: string, victimTeam: Team) => void;
 }
 
-export type Zone = 'head' | 'body';
-export type BotEvent = 'hit' | 'death' | 'kill' | 'spot' | 'idle' | 'throw';
+export type Zone = 'head' | 'body' | 'hat';
+export type BotEvent = 'hit' | 'death' | 'kill' | 'spot' | 'idle' | 'throw' | 'hat' | 'fart' | 'sneeze' | 'bug' | 'rpg';
+/** What dealt the damage; big ones (and explosions) turn fighters into confetti. */
+export type DamageKind = 'bullet' | 'shotgun' | 'explosion' | 'melee' | 'critter';
 
 interface Target {
   pos: THREE.Vector3;
   centreY: number;
   speed: number;
-  bot: Bot | null; // null => the human player
+  bot: Bot | null; // null => the human player (or a critter)
+  critter?: Critter | null;
 }
 
 /** A spot beside an obstacle. `low` means it only hides a crouched gnome. */
@@ -70,6 +75,8 @@ const tD = new THREE.Vector3();
 const hA = new THREE.Vector3();
 const hB = new THREE.Vector3();
 const hD = new THREE.Vector3();
+const gV = new THREE.Vector3();
+const gP = new THREE.Vector3();
 
 function wrapAngle(a: number): number {
   while (a > Math.PI) a -= 2 * Math.PI;
@@ -80,6 +87,8 @@ function wrapAngle(a: number): number {
 export class Bot {
   /** Set by the game: lets it play voice/hit sounds without bots knowing about audio details. */
   static onEvent: ((kind: BotEvent, bot: Bot) => void) | null = null;
+  /** Visual effects (blood, gibs, hats), set by the game. */
+  static fx: Effects | null = null;
 
   readonly pos = new THREE.Vector3();
   readonly group = new THREE.Group();
@@ -87,6 +96,12 @@ export class Bot {
   hp = 100;
   dead = false;
   readonly voicePitch: number;
+  readonly voiceSeed = Math.floor(Math.random() * 997);
+  hasHat = true;
+  gibbed = false;
+  private flying = false;
+  private flyVel = new THREE.Vector3();
+  private flySpin = new THREE.Vector3();
   readonly maxHp: number;
   private readonly mul: number; // class speed multiplier
   private readonly sight: number;
@@ -135,9 +150,11 @@ export class Bot {
   private aiming = false;
   private wasSeeing = false;
   private frags = 0;
+  private rockets = 0;
   private fragCool = 0;
   private lastHitSnd = 0;
   private chatT = 8 + Math.random() * 15;
+  private gasT = 15 + Math.random() * 40; // until the next fart (goblins) or sneeze (gnomes)
   private self: Target;
 
   // hitbox scratch (body / head / hat)
@@ -176,7 +193,9 @@ export class Bot {
     this.speedNow = 0;
     this.wasSeeing = false;
     this.frags = Math.random() < 0.6 ? 1 : 0;
+    this.rockets = this.cls === 'heavy' && Math.random() < 0.7 ? 1 : 0;
     this.fragCool = 4 + Math.random() * 8;
+    this.gasT = 12 + Math.random() * 45;
     this.tac = 'hold';
     this.holdT = 1.5 + Math.random() * 3.5; // settle in, scan, don't sprint off
     this.lane = (Math.random() * 2 - 1) * 22;
@@ -190,6 +209,10 @@ export class Bot {
     this.crouch = 0;
     this.wantCrouch = false;
     this.group.rotation.x = 0;
+    this.group.rotation.z = 0;
+    this.flying = false;
+    this.gibbed = false;
+    this.restoreHat();
     for (const m of this.model.mats) m.emissive.setHex(0x000000);
     this.applyCrouch();
     this.sync();
@@ -211,11 +234,11 @@ export class Bot {
     const m = this.model;
     set(0, 0.35 * S, 0, 1.0 * S);
     set(1, m.headHalf * S, 1.0 * S, m.headTop * S);
-    const hasHat = m.hatTop > m.headTop; // gnomes have a tall pointy hat; goblins don't
-    if (hasHat) set(2, 0.15 * S, m.headTop * S, m.hatTop * S);
+    const hatOn = this.hasHat && m.hatTop > m.headTop; // shoot it off and that part of the target is just air
+    if (hatOn) set(2, m.hatHalf * S, m.headTop * S, m.hatTop * S);
     let best: { t: number; zone: Zone } | null = null;
-    const zones: Zone[] = ['body', 'head', 'body'];
-    for (let i = 0; i < (hasHat ? 3 : 2); i++) {
+    const zones: Zone[] = ['body', 'head', 'hat'];
+    for (let i = 0; i < (hatOn ? 3 : 2); i++) {
       const t = rayAABB(o, d, this.hb[i].min, this.hb[i].max);
       if (t < Infinity && (!best || t < best.t)) best = { t, zone: zones[i] };
     }
@@ -223,7 +246,7 @@ export class Bot {
   }
 
   /** Returns true if this hit killed the bot. */
-  damage(amount: number, from: THREE.Vector3): boolean {
+  damage(amount: number, from: THREE.Vector3, how: DamageKind = 'bullet'): boolean {
     if (this.dead) return false;
     this.hp -= amount;
     this.hurtSince = 0;
@@ -234,12 +257,33 @@ export class Bot {
     this.known.set(from.x, 0, from.z);
     this.hasKnown = true;
     this.knownT = 0;
+
+    // blood sprays away from whatever hit us
+    const fx = Bot.fx;
+    gV.set(this.pos.x - from.x, 0, this.pos.z - from.z);
+    const away = gV.length() || 1;
+    gV.divideScalar(away);
+    if (fx) {
+      gP.set(this.pos.x, this.pos.y + 0.9 * this.k, this.pos.z);
+      fx.blood(gP, gV.set(gV.x, 0.3, gV.z), this.blood, Math.min(14, 3 + Math.round(amount / 10)), how === 'explosion' ? 7 : 4);
+      gV.set(gV.x, 0, gV.z);
+    }
+
     if (this.hp <= 0) {
+      const over = -this.hp;
       this.dead = true;
       this.deadT = 0;
       this.aiming = false;
       for (const m of this.model.mats) m.emissive.setHex(0x000000);
       Bot.onEvent?.('death', this);
+      this.knockHat(gV, 1.4); // the hat always goes flying
+      const gib = how === 'explosion' || how === 'melee' || over >= 70 || (how === 'shotgun' && over >= 10);
+      if (gib) {
+        this.gib(gV, how === 'explosion' ? 9 : 6);
+      } else {
+        fx?.splat(this.pos, this.blood, 1.6);
+        if (how === 'shotgun' || over >= 35) this.launch(gV, how === 'shotgun' ? 8 : 6);
+      }
       return true;
     }
     const now = performance.now();
@@ -248,6 +292,79 @@ export class Bot {
       Bot.onEvent?.('hit', this);
     }
     return false;
+  }
+
+  get blood(): number {
+    return this.faction === 'goblin' ? 0x7cd13a : 0xb01818;
+  }
+
+  /** Shoot the hat off: no damage, it just flies away. Returns false if there was no hat to knock off. */
+  knockHat(dir: THREE.Vector3, power = 1): boolean {
+    if (!this.hasHat || this.gibbed) return false;
+    const parent = this.group.parent;
+    if (!parent) return false;
+    this.hasHat = false;
+    const hat = this.model.hat;
+    parent.attach(hat); // keeps its position in the world while leaving the body
+    Bot.fx?.addProp(
+      hat,
+      new THREE.Vector3(dir.x * (2 + Math.random() * 3) * power, (6 + Math.random() * 3) * power, dir.z * (2 + Math.random() * 3) * power),
+      new THREE.Vector3(Math.random() * 12 - 6, Math.random() * 10 - 5, Math.random() * 12 - 6),
+      0.35,
+    );
+    return true;
+  }
+
+  private restoreHat() {
+    if (this.hasHat) return;
+    Bot.fx?.dropProp(this.model.hat);
+    const h = this.model.hat;
+    this.model.root.add(h);
+    h.position.set(0, this.model.hatHeight, 0);
+    h.rotation.set(0, 0, 0);
+    h.scale.set(1, 1, 1);
+    this.hasHat = true;
+  }
+
+  /** Burst into chunks. */
+  private gib(dir: THREE.Vector3, power: number) {
+    this.gibbed = true;
+    this.group.visible = false;
+    const cols = this.model.mats.map((m) => m.color.getHex());
+    gP.set(this.pos.x, this.pos.y + 0.8, this.pos.z);
+    Bot.fx?.gibs(gP, cols, 14, power, this.blood, dir);
+    Bot.fx?.splat(this.pos, this.blood, 2.4);
+  }
+
+  /** Corpse sent tumbling through the air. */
+  private launch(dir: THREE.Vector3, power: number) {
+    this.flying = true;
+    this.flyVel.set(dir.x * power, 5 + power * 0.5, dir.z * power);
+    this.flySpin.set((Math.random() - 0.5) * 14, 0, (Math.random() - 0.5) * 14);
+  }
+
+  private flyStep(dt: number, c: BotContext) {
+    const v = this.flyVel;
+    v.y -= 22 * dt;
+    if (c.world.moveAxis(this.pos, HW, 0.8, 'x', v.x * dt)) v.x *= -0.4;
+    if (c.world.moveAxis(this.pos, HW, 0.8, 'z', v.z * dt)) v.z *= -0.4;
+    this.pos.y += v.y * dt;
+    this.group.rotation.x += this.flySpin.x * dt;
+    this.group.rotation.z += this.flySpin.z * dt;
+    if (this.pos.y <= 0) {
+      this.pos.y = 0;
+      c.fx.splat(this.pos, this.blood, 0.9);
+      if (v.y < -4) {
+        v.y *= -0.3;
+        v.x *= 0.6;
+        v.z *= 0.6;
+        this.flySpin.multiplyScalar(0.5);
+      } else {
+        this.flying = false;
+        this.group.rotation.set(-Math.PI / 2, this.group.rotation.y, 0);
+      }
+    }
+    this.group.position.copy(this.pos);
   }
 
   heal(n: number) {
@@ -285,6 +402,10 @@ export class Bot {
     if (this.team === 1 && c.player.alive) {
       out.push({ pos: c.player.pos, centreY: 1.2, speed: c.player.horizSpeed, bot: null });
     }
+    // bugs and spiders go for everybody
+    for (const k of c.critters) {
+      if (!k.dead) out.push({ pos: k.pos, centreY: k.centreY, speed: k.speedNow, bot: null, critter: k });
+    }
     return out;
   }
 
@@ -292,7 +413,8 @@ export class Bot {
     if (this.dead) {
       c.fx.laserOff(this);
       this.deadT += dt;
-      this.group.rotation.x = -Math.min(1, this.deadT * 3) * (Math.PI / 2);
+      if (this.flying) this.flyStep(dt, c);
+      else if (!this.gibbed) this.group.rotation.x = -Math.min(1, this.deadT * 3) * (Math.PI / 2);
       return;
     }
 
@@ -304,6 +426,11 @@ export class Bot {
     this.alert = Math.max(0, this.alert - dt);
     this.hurtT = Math.max(0, this.hurtT - dt);
     this.hurtSince += dt;
+    this.gasT -= dt;
+    if (this.gasT <= 0) {
+      this.gasT = 30 + Math.random() * 60;
+      Bot.onEvent?.(this.faction === 'goblin' ? 'fart' : 'sneeze', this);
+    }
     const regen = CLASSES[this.cls].regen;
     if (regen > 0 && this.hurtSince > 4) this.heal(regen * dt);
 
@@ -336,10 +463,14 @@ export class Bot {
     this.knownT += dt;
 
     if (tgt && !this.wasSeeing) {
-      if (!tgt.bot && Math.random() < 0.4) Bot.onEvent?.('spot', this);
-      // call it out: nearby teammates start moving toward the contact (carefully)
-      for (const o of c.bots) {
-        if (o !== this && !o.dead && o.team === this.team && o.pos.distanceTo(this.pos) < 50 && Math.random() < 0.7) o.hear(tgt.pos);
+      if (tgt.critter) {
+        if (Math.random() < 0.5) Bot.onEvent?.('bug', this);
+      } else {
+        if (!tgt.bot && Math.random() < 0.4) Bot.onEvent?.('spot', this);
+        // call it out: nearby teammates start moving toward the contact (carefully)
+        for (const o of c.bots) {
+          if (o !== this && !o.dead && o.team === this.team && o.pos.distanceTo(this.pos) < 50 && Math.random() < 0.7) o.hear(tgt.pos);
+        }
       }
     }
     this.wasSeeing = !!tgt;
@@ -410,12 +541,20 @@ export class Bot {
 
     // grenades from a distance
     this.fragCool -= dt;
-    if (this.frags > 0 && this.fragCool <= 0 && dist > 10 && dist < 30 && this.react > 0.4 && Math.random() < dt * 0.5) {
+    if (!tgt.critter && this.frags > 0 && this.fragCool <= 0 && dist > 10 && dist < 30 && this.react > 0.4 && Math.random() < dt * 0.5) {
       this.frags--;
       this.fragCool = 12 + Math.random() * 10;
       const from = new THREE.Vector3(this.pos.x - Math.sin(this.yaw) * 0.4, this.pos.y + 1.3, this.pos.z - Math.cos(this.yaw) * 0.4);
       c.grenades.throwAt('frag', from, new THREE.Vector3(tp.x, tp.y + 0.1, tp.z), { team: this.team, name: this.name, isPlayer: false });
       Bot.onEvent?.('throw', this);
+    }
+
+    // heavies sometimes carry an RPG
+    if (!tgt.critter && this.rockets > 0 && dist > 14 && dist < 38 && this.react > 0.5 && Math.random() < dt * 0.35) {
+      this.rockets--;
+      const from = new THREE.Vector3(this.pos.x - Math.sin(this.yaw) * 0.6, this.pos.y + 1.1 * this.k, this.pos.z - Math.cos(this.yaw) * 0.6);
+      c.grenades.rocketAt(from, new THREE.Vector3(tp.x, tp.y + tgt.centreY, tp.z), { team: this.team, name: this.name, isPlayer: false });
+      Bot.onEvent?.('rpg', this);
     }
 
     // shooting
@@ -821,6 +960,10 @@ export class Bot {
     if (!hit) return;
     let dmg = P.dmgLo + Math.random() * (P.dmgHi - P.dmgLo);
     if (this.cls === 'sniper' && Math.random() < 0.1) dmg *= 2.8; // the occasional headshot
+    if (t.critter) {
+      t.critter.damage(dmg * 1.3, this.pos, 'bullet');
+      return;
+    }
     if (t.bot) {
       if (t.bot.damage(dmg, this.pos)) {
         c.onKill(this.name, t.bot.name, t.bot.team);

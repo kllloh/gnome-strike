@@ -26,8 +26,9 @@ Open the address it prints (use `localhost`).
 - **Pick a side** (Gnomes or Goblins) and a **class** on the start screen. Switching restarts the match.
 - Rounds: 10s buy time, then eliminate the other team. First to 8 round wins.
 - **Controls:** WASD move, Space jump, Shift walk, mouse aim, click shoot, right-click scope (sniper),
-  R reload, G frag, V smoke, B buy menu, M toggle gnome/goblin voices, 1/2 switch weapon.
-- **Buy menu (B, during buy time):** 1 SMG, 2 Shotgun, 3 Rifle, 4 Sniper, 5 Armor, 6 Frag, 7 Smoke.
+  R reload, G frag, V smoke, B buy menu, M toggle voices, H toggle gore, 1 primary / 2 pistol / 3 chainsaw.
+- **Buy menu (B, during buy time):** 1 SMG, 2 Shotgun, 3 Rifle, 4 Sniper, 5 Armor, 6 Frag, 7 Smoke,
+  8 RPG, 9 Chainsaw.
 
 ### Classes
 
@@ -45,6 +46,20 @@ Most props, the low brick walls, the shed and the greenhouse can be shot or blow
 boundary walls can't. Smoke blocks bots' sight, glass stops movement but not bullets, and everything
 resets each round.
 
+### Chaos
+
+- **Hats:** shoot a hat off and it goes flying, with no damage to the owner. Hats also fly off when someone
+  dies or sneezes.
+- **Weapons for the unhinged:** RPG (rockets with a huge blast radius) and a chainsaw that gibs whatever it touches.
+- **Gore:** blood sprays, splats on the ground, gibs, and corpses launched by explosions. Goblins bleed
+  green. Press **H** to switch it off.
+- **Pests:** spiders, beetles and wasps turn up during rounds and attack both teams. Late in a round the
+  Spider Queen may show up.
+- **Accidents:** goblins fart and gnomes sneeze now and then (and so do you, depending on your side). It
+  gives your position away.
+- **Voices:** uses the best English speech voices your system has (gnomes: British-style, goblins: low male).
+  Windows/Edge "Natural" voices sound the best.
+
 ## Code map
 
 - `src/main.ts` – game loop, rounds, economy, HUD, input
@@ -52,4 +67,5 @@ resets each round.
 - `src/map.ts` – the garden
 - `src/bots.ts` – bot AI (cover, peeking, class behaviour)
 - `src/nav.ts` – nav grid, A*, cover spots
+- `src/critters.ts` – spiders, beetles, wasps
 - `src/classes.ts`, `src/weapon.ts`, `src/grenades.ts`, `src/gnome.ts`, `src/player.ts`, `src/fx.ts`, `src/audio.ts`

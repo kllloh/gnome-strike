@@ -17,6 +17,10 @@ export interface GnomeModel {
   headTop: number;
   hatTop: number;
   headHalf: number;
+  /** The hat, as its own group so it can be shot off. hatHeight is where its centre sits (unscaled). */
+  hat: THREE.Group;
+  hatHeight: number;
+  hatHalf: number;
 }
 
 const SKIN = 0xf0c8a0;
@@ -58,12 +62,16 @@ export function createGnome(shirt: number, hat = 0xc42b2b): GnomeModel {
   mk(root, 0.2, 0.08, 0.06, 0, 1.08, -0.2, 0xf4f4f4); // moustache
 
   // pointy hat, stacked blocks
-  mk(root, 0.5, 0.1, 0.5, 0, 1.43, 0, hat);
-  mk(root, 0.38, 0.2, 0.38, 0, 1.58, 0, hat);
-  mk(root, 0.3, 0.2, 0.3, 0, 1.78, 0, hat);
-  mk(root, 0.22, 0.2, 0.22, 0, 1.98, 0, hat);
-  mk(root, 0.14, 0.2, 0.14, 0, 2.18, 0, hat);
-  mk(root, 0.08, 0.12, 0.08, 0, 2.34, 0, hat);
+  const HC = 1.9; // hat group pivots at its own centre so it tumbles nicely when knocked off
+  const hatGroup = new THREE.Group();
+  hatGroup.position.y = HC;
+  root.add(hatGroup);
+  mk(hatGroup, 0.5, 0.1, 0.5, 0, 1.43 - HC, 0, hat);
+  mk(hatGroup, 0.38, 0.2, 0.38, 0, 1.58 - HC, 0, hat);
+  mk(hatGroup, 0.3, 0.2, 0.3, 0, 1.78 - HC, 0, hat);
+  mk(hatGroup, 0.22, 0.2, 0.22, 0, 1.98 - HC, 0, hat);
+  mk(hatGroup, 0.14, 0.2, 0.14, 0, 2.18 - HC, 0, hat);
+  mk(hatGroup, 0.08, 0.12, 0.08, 0, 2.34 - HC, 0, hat);
 
   // arms pivot at the shoulder
   const armL = new THREE.Group();
@@ -80,7 +88,7 @@ export function createGnome(shirt: number, hat = 0xc42b2b): GnomeModel {
   root.add(armL, armR);
 
   root.scale.setScalar(GNOME_SCALE);
-  return { root, legL, legR, armL, armR, mats, headTop: 1.48, hatTop: 2.4, headHalf: 0.25 };
+  return { root, legL, legR, armL, armR, mats, headTop: 1.48, hatTop: 2.4, headHalf: 0.25, hat: hatGroup, hatHeight: HC, hatHalf: 0.15 };
 }
 
 const GOBLIN_SKIN = 0x6aa84f;
@@ -138,10 +146,14 @@ export function createGoblin(shirt: number): GnomeModel {
   }
 
   // rusty iron cap with horns
-  mk(root, 0.46, 0.1, 0.46, 0, 1.45, 0, 0x7a5a3a);
-  mk(root, 0.34, 0.1, 0.34, 0, 1.55, 0, 0x6a4c30);
+  const HC = 1.55;
+  const hatGroup = new THREE.Group();
+  hatGroup.position.y = HC;
+  root.add(hatGroup);
+  mk(hatGroup, 0.46, 0.1, 0.46, 0, 1.45 - HC, 0, 0x7a5a3a);
+  mk(hatGroup, 0.34, 0.1, 0.34, 0, 1.55 - HC, 0, 0x6a4c30);
   for (const sx of [-1, 1]) {
-    const h = mk(root, 0.08, 0.26, 0.08, sx * 0.24, 1.62, 0, 0xe8ddc0);
+    const h = mk(hatGroup, 0.08, 0.26, 0.08, sx * 0.24, 1.62 - HC, 0, 0xe8ddc0);
     h.rotation.z = -sx * 0.4;
   }
 
@@ -160,7 +172,7 @@ export function createGoblin(shirt: number): GnomeModel {
   root.add(armL, armR);
 
   root.scale.setScalar(GNOME_SCALE);
-  return { root, legL, legR, armL, armR, mats, headTop: 1.72, hatTop: 1.72, headHalf: 0.3 };
+  return { root, legL, legR, armL, armR, mats, headTop: 1.4, hatTop: 1.75, headHalf: 0.3, hat: hatGroup, hatHeight: HC, hatHalf: 0.24 };
 }
 
 export function createFighter(faction: Faction, cls: ClassId = 'assault'): GnomeModel {

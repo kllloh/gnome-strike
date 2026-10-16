@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 
 export interface WeaponDef {
-  id: 'pistol' | 'smg' | 'rifle' | 'shotgun' | 'sniper';
+  id: 'pistol' | 'smg' | 'rifle' | 'shotgun' | 'sniper' | 'rpg' | 'chainsaw';
   name: string;
-  slot: 'primary' | 'secondary';
+  slot: 'primary' | 'secondary' | 'melee';
   price: number;
   mag: number;
   reserve: number;
@@ -17,6 +17,8 @@ export interface WeaponDef {
   pellets?: number; // >1 for shotguns: rays per shot
   pelletSpread?: number; // extra cone (radians) per pellet
   scope?: number; // field of view (degrees) while scoped; present only on scoped weapons
+  melee?: number; // reach in metres; melee weapons need no ammo
+  projectile?: 'rocket'; // fires a rocket instead of a hitscan bullet
 }
 
 export const WEAPONS: Record<WeaponDef['id'], WeaponDef> = {
@@ -24,6 +26,8 @@ export const WEAPONS: Record<WeaponDef['id'], WeaponDef> = {
   smg: { id: 'smg', name: 'SMG', slot: 'primary', price: 1200, mag: 25, reserve: 100, interval: 0.07, auto: true, body: 17, head: 42, reload: 1.6, spread: 1.4, recoil: 0.007 },
   shotgun: { id: 'shotgun', name: 'Shotgun', slot: 'primary', price: 1800, mag: 6, reserve: 30, interval: 0.85, auto: false, body: 14, head: 28, reload: 2.4, spread: 0.6, recoil: 0.05, pellets: 8, pelletSpread: 0.05 },
   sniper: { id: 'sniper', name: 'Sniper', slot: 'primary', price: 3200, mag: 5, reserve: 25, interval: 1.3, auto: false, body: 100, head: 250, reload: 2.6, spread: 10, recoil: 0.04, scope: 22 },
+  rpg: { id: 'rpg', name: 'RPG', slot: 'primary', price: 3600, mag: 1, reserve: 4, interval: 1.2, auto: false, body: 0, head: 0, reload: 2.6, spread: 0.2, recoil: 0.09, projectile: 'rocket' },
+  chainsaw: { id: 'chainsaw', name: 'Chainsaw', slot: 'melee', price: 1500, mag: 999, reserve: 0, interval: 0.07, auto: true, body: 11, head: 17, reload: 0, spread: 0, recoil: 0, melee: 2.6 },
   rifle: { id: 'rifle', name: 'Rifle', slot: 'primary', price: 2700, mag: 30, reserve: 90, interval: 0.09, auto: true, body: 26, head: 70, reload: 1.9, spread: 1, recoil: 0.010 },
 };
 
@@ -35,6 +39,9 @@ export class Weapon {
   reserve: number;
   reloading = false;
   heat = 0; // sustained-fire inaccuracy, 0..1
+  revving = false; // chainsaw: trigger held
+  private teeth: THREE.Mesh[] = [];
+  private chainT = 0;
 
   private reloadT = 0;
   private cool = 0;
@@ -77,6 +84,37 @@ export class Weapon {
     this.flash.visible = false;
     this.model.add(this.flash);
 
+    if (def.id === 'rpg' || def.id === 'chainsaw') {
+      this.model.clear(); // these two look nothing like a rifle
+      this.model.add(this.muzzle, this.flash);
+      if (def.id === 'rpg') {
+        mk(0.17, 0.17, 1.0, 0, 0.03, -0.2, 0x4a5a3a); // launch tube
+        mk(0.23, 0.23, 0.12, 0, 0.03, 0.36, 0x2e2e2e); // rear flare
+        mk(0.23, 0.23, 0.22, 0, 0.03, -0.78, 0xb03030); // warhead
+        mk(0.14, 0.14, 0.14, 0, 0.03, -0.95, 0xb03030);
+        mk(0.07, 0.15, 0.07, 0, -0.1, 0.02, 0x222222); // grip
+        mk(0.09, 0.09, 0.09, 0, -0.06, -0.06, skin);
+        mk(0.09, 0.09, 0.09, 0, -0.06, -0.38, skin);
+        mk(0.11, 0.11, 0.3, 0.03, -0.12, 0.34, sleeve);
+        this.muzzle.position.set(0, 0.03, -1.05);
+        this.flash.position.set(0, 0.03, -1.1);
+      } else {
+        mk(0.2, 0.22, 0.42, 0, 0, 0.05, 0xe0731a); // engine block
+        mk(0.07, 0.14, 0.07, 0, 0.17, 0.12, 0x222222); // handle
+        mk(0.07, 0.07, 0.26, 0, 0.25, 0.12, 0x222222);
+        mk(0.07, 0.12, 0.85, 0, 0, -0.6, 0x9aa0a6); // guide bar
+        mk(0.09, 0.09, 0.09, 0, 0.1, 0.14, skin);
+        mk(0.09, 0.09, 0.09, 0, -0.08, -0.12, skin);
+        mk(0.11, 0.11, 0.3, 0.03, -0.14, 0.3, sleeve);
+        for (let i = 0; i < 14; i++) {
+          const top = mk(0.09, 0.04, 0.05, 0, 0.08, 0, 0x2a2a2a);
+          const bot = mk(0.09, 0.04, 0.05, 0, -0.08, 0, 0x2a2a2a);
+          this.teeth.push(top, bot);
+        }
+        this.muzzle.position.set(0, 0, -1.0);
+      }
+    }
+
     if (def.id === 'shotgun') {
       mk(0.07, 0.07, 0.22, 0, -0.06, -0.3, 0x6b4a2f); // pump
       mk(0.05, 0.05, 0.3, 0, -0.025, -0.38, 0x1e1e1e); // second barrel
@@ -85,6 +123,8 @@ export class Weapon {
     // size/position variants of the same blocky gun
     if (def.id === 'shotgun') this.model.scale.set(1.15, 1.05, 0.95);
     if (def.id === 'sniper') this.base.set(0.2, -0.22, -0.4);
+    if (def.id === 'rpg') this.base.set(0.18, -0.2, -0.45);
+    if (def.id === 'chainsaw') this.base.set(0.2, -0.22, -0.4);
     if (def.id === 'smg') this.model.scale.set(1, 1, 0.78);
     if (def.id === 'pistol') {
       this.model.scale.set(0.9, 0.9, 0.5);
@@ -99,6 +139,12 @@ export class Weapon {
 
   /** Try to fire one round. Returns true if a round left the barrel. */
   tryFire(): boolean {
+    if (this.def.melee) {
+      if (this.cool > 0) return false;
+      this.cool = this.def.interval;
+      this.kick = 0.6;
+      return true;
+    }
     if (this.reloading || this.cool > 0) return false;
     if (this.ammo <= 0) {
       this.startReload();
@@ -113,6 +159,7 @@ export class Weapon {
   }
 
   startReload(): boolean {
+    if (this.def.melee) return false;
     if (this.reloading || this.ammo === this.def.mag || this.reserve <= 0) return false;
     this.reloading = true;
     this.reloadT = 0;
@@ -162,5 +209,20 @@ export class Weapon {
       this.base.z + this.kick * 0.05,
     );
     this.model.rotation.set(this.kick * 0.05 - rp * 0.5, 0, rp * 0.5);
+
+    if (this.teeth.length) {
+      // the chain runs round the bar, and the whole saw shakes while it cuts
+      this.chainT += dt * (this.revving ? 3.2 : 0.6);
+      const n = this.teeth.length / 2;
+      for (let i = 0; i < n; i++) {
+        const u = (i / n + this.chainT) % 1;
+        this.teeth[i * 2].position.z = -0.2 - u * 0.8;
+        this.teeth[i * 2 + 1].position.z = -0.2 - ((1 - u) % 1) * 0.8;
+      }
+      if (this.revving) {
+        this.model.position.x += (Math.random() - 0.5) * 0.012;
+        this.model.position.y += (Math.random() - 0.5) * 0.012;
+      }
+    }
   }
 }

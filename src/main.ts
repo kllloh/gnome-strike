@@ -10,6 +10,7 @@ import { Bot, type BotContext, type BotEvent, type Team } from './bots';
 import { Effects } from './fx';
 import { Sound } from './audio';
 import { Grenades, type GrenadeKind } from './grenades';
+import { Critters, Critter, type CritterContext, type CritterKind } from './critters';
 
 // --- match rules -------------------------------------------------------------
 const TEAM_SIZE = 5; // you + 4 bots vs 5 bots
@@ -70,6 +71,11 @@ const nav = new NavGrid(world);
 const player = new Player(world, camera);
 const fx = new Effects(scene);
 const sound = new Sound();
+Bot.fx = fx;
+const critters = new Critters(scene, fx, sound);
+try {
+  if (localStorage.getItem('gs-gore') === '0') fx.goreOn = false;
+} catch { /* storage unavailable */ }
 
 // --- HUD ---------------------------------------------------------------------
 const $ = (id: string) => document.getElementById(id)!;
@@ -144,15 +150,23 @@ try {
 // --- bots ----------------------------------------------------------------------
 const bots: Bot[] = [];
 const grenades = new Grenades(scene, world, fx, sound, bots, player, (t, b) => {
-  feedPush(`${t.name} ▸ ${b.name} 💥`, b.team === 1 ? '#8cf' : '#f88');
+  feedPush(`${t.name} ${pick(VERBS[t.isPlayer ? faction : otherFaction(b.faction)])} ${b.name} 💥`, b.team === 1 ? '#8cf' : '#f88');
   if (t.isPlayer) {
     kills++;
     money = Math.min(MAX_MONEY, money + KILL_BONUS);
   }
 });
+grenades.critters = critters.list;
+const critterCtx: CritterContext = {
+  world, nav, player, bots,
+  onKill: (critter, victim) => feedPush(`${critter} munched ${victim}`, '#c8e07a'),
+};
 const ctx: BotContext = {
-  world, nav, player, fx, sound, bots, grenades,
-  onKill: (killer, victim, victimTeam) => feedPush(`${killer} ▸ ${victim}`, victimTeam === 1 ? '#8cf' : '#f88'),
+  world, nav, player, fx, sound, bots, grenades, critters: critters.list,
+  onKill: (killer, victim, victimTeam) => {
+    const kf = bots.find((x) => x.name === killer)?.faction ?? 'gnome';
+    feedPush(`${killer} ${pick(VERBS[kf])} ${victim}`, victimTeam === 1 ? '#8cf' : '#f88');
+  },
 };
 
 /** (Re)create every bot for the current choice of side: team 0 is the player's faction. */
@@ -178,11 +192,15 @@ buildBots();
 // --- voices: each faction talks differently -----------------------------------------
 const LINES: Record<Faction, Partial<Record<BotEvent, string[]>>> = {
   gnome: {
-    kill: ['Ha ha, take that!', 'Get off my lawn!', 'Gnome sweet gnome!', 'Pointy hats forever!', 'Another goblin for the compost heap!', 'You have been gnomed!', 'Nice try, scoundrel!'],
-    spot: ['Goblin!', 'Vermin in the vegetable patch!', 'Intruder!'],
-    idle: ['I smell goblins.', 'Stay sharp, lads.', 'Not on my watch.', 'Tea after this, I think.'],
+    kill: ['Ha ha, take that!', 'Get out of my garden!', 'Get off my lawn!', 'Gnome sweet gnome!', 'Pointy hats forever!', 'Another goblin for the compost heap!', 'You have been gnomed!', 'Nice try, scoundrel!', 'Shoo! Shoo!'],
+    spot: ['Goblin!', 'Get out of my garden!', 'Vermin in the vegetable patch!', 'Intruder!'],
+    idle: ['I smell goblins.', 'Stay sharp, lads.', 'Not on my watch.', 'Tea after this, I think.', 'Get out of my garden!'],
     throw: ['Fire in the hole!', 'Catch!', 'Surprise!'],
     death: ['Oh, fiddlesticks!', 'Tell my snails I loved them!'],
+    hat: ['My hat! Give it back!', 'Not the hat!', 'How dare you, sir!'],
+    sneeze: ['Ah... ah... ACHOO!', 'Bless me!'],
+    bug: ['Eek! A spider!', 'Shoo, you horrid thing!', 'Bugs! In my garden!'],
+    rpg: ['Rocket!', 'Hold your ears!', 'Tally ho!'],
   },
   goblin: {
     kill: ['Heh heh heh, dead gnome!', 'Smash them, bash them!', 'Shiny hat is mine now!', 'Gnome stew tonight!', 'Squish!', 'That is what you get, hat boy!'],
@@ -190,26 +208,84 @@ const LINES: Record<Faction, Partial<Record<BotEvent, string[]>>> = {
     idle: ['Me smell hats.', 'Where little gnomes hiding?', 'Me hungry.', 'Hee hee hee.'],
     throw: ['Boom boom!', 'Eat this!', 'Bomb!'],
     death: ['Argh, me die!', 'Not the face!'],
+    hat: ['Me hat!', 'Give hat back!', 'Hat stealer!'],
+    fart: ['Oops.', 'Heh, was me.', 'Pardon me.'],
+    bug: ['Big bug! Me no like!', 'Spider! Spider!', 'Eat it, bug!'],
+    rpg: ['Boom stick!', 'Rocket go whoosh!', 'Run, gnomes!'],
   },
 };
+
+/** Make enemies within `radius` of a noise come and have a look. */
+function alertEnemiesNear(pos: THREE.Vector3, team: Team, radius: number) {
+  for (const o of bots) if (!o.dead && o.team !== team && o.pos.distanceTo(pos) < radius) o.hear(pos);
+}
+
 Bot.onEvent = (kind, b) => {
   const { vol, pan } = sound.spatial(b.pos.x, b.pos.z);
   const goblin = b.faction === 'goblin';
   const say = (chance: number) => {
     const lines = LINES[b.faction][kind];
-    if (lines && Math.random() < chance) sound.taunt(lines[Math.floor(Math.random() * lines.length)], vol, pan, b.voicePitch);
+    if (lines && lines.length && Math.random() < chance) {
+      sound.taunt(lines[Math.floor(Math.random() * lines.length)], vol, pan, b.voicePitch, b.faction, b.voiceSeed);
+    }
   };
   if (kind === 'hit') sound.gnomeHit(vol, pan, b.voicePitch, goblin);
   else if (kind === 'death') {
     sound.gnomeDeath(vol, pan, b.voicePitch, goblin);
     say(0.4);
-  } else say(kind === 'kill' || kind === 'throw' ? 0.7 : 1);
+  } else if (kind === 'kill') {
+    if (Math.random() < 0.3) sound.cackle(vol, pan, b.faction);
+    else say(0.7);
+  } else if (kind === 'fart') {
+    sound.fart(vol, pan);
+    fx.cloud(new THREE.Vector3(b.pos.x, 0.3, b.pos.z), 0x9bd13a, 3.2);
+    alertEnemiesNear(b.pos, b.team, 16); // the smell gives you away
+    say(0.6);
+  } else if (kind === 'sneeze') {
+    sound.sneeze(vol, pan);
+    b.knockHat(new THREE.Vector3(Math.random() - 0.5, 0, Math.random() - 0.5).normalize(), 1); // the force of it blows the hat off
+    alertEnemiesNear(b.pos, b.team, 22);
+    say(0.8);
+  } else say(kind === 'throw' || kind === 'rpg' ? 0.7 : 1);
 };
 
 const friends = () => bots.filter((b) => b.team === 0);
 const enemies = () => bots.filter((b) => b.team === 1);
 
 /** Medics heal teammates standing close to them. */
+let critterT = 8;
+let queenSpawned = false;
+let bugBannerShown = false;
+const LAIRS: [number, number][] = [[-28, 6], [28, -2], [-18, 27], [2, 28], [22, 26], [-10, -12], [12, -13], [27, 12], [-27, -16]];
+
+/** Bugs and spiders turn up now and then, and more of them as the round drags on. */
+function spawnCritters(dt: number) {
+  critterT -= dt;
+  if (critterT > 0) return;
+  const elapsed = ROUND_TIME - phaseT;
+  critterT = Math.max(5, 14 - elapsed / 12) + Math.random() * 6;
+  if (critters.alive() >= 4 + Math.floor(elapsed / 25)) return;
+  const spots = LAIRS.filter(([x, z]) => nav.isFreeAt(x, z) && Math.hypot(x - player.pos.x, z - player.pos.z) > 14);
+  const [lx, lz] = spots.length ? spots[Math.floor(Math.random() * spots.length)] : [nav.randomFreePoint(28).x, nav.randomFreePoint(28).z];
+  const at = new THREE.Vector3(lx, 0, lz);
+  const r = Math.random();
+  const kind: CritterKind = r < 0.5 ? 'spider' : r < 0.75 ? 'wasp' : 'beetle';
+  critters.spawn(kind, at);
+  fx.burst(at, 0x5a3d28, 10, 4, 2);
+  const sp = sound.spatial(at.x, at.z);
+  sound.skitter(Math.max(0.3, sp.vol), sp.pan);
+  if (!bugBannerShown) {
+    bugBannerShown = true;
+    banner('BUGS IN THE GARDEN!', 1.6);
+  }
+  if (!queenSpawned && elapsed > 70 && Math.random() < 0.5) {
+    queenSpawned = true;
+    const [qx, qz] = spots.length ? spots[Math.floor(Math.random() * spots.length)] : [lx, lz];
+    critters.spawn('spider', new THREE.Vector3(qx, 0, qz), true);
+    banner('THE SPIDER QUEEN ARRIVES!', 2.6);
+  }
+}
+
 function medicAura(dt: number) {
   for (const m of bots) {
     const heal = CLASSES[m.cls].healAura;
@@ -225,6 +301,7 @@ function medicAura(dt: number) {
 const makeWeapon = (def: WeaponDef) => new Weapon(def, FACTION_INFO[faction].skin, FACTION_INFO[faction].sleeve);
 let pistol = makeWeapon(WEAPONS.pistol);
 let primary: Weapon | null = null;
+let melee: Weapon | null = null;
 let current: Weapon = pistol;
 camera.add(current.model);
 
@@ -264,6 +341,15 @@ const SHOP: ShopItem[] = [
   },
   { key: '6', label: 'Frag (G)', price: 300, give: () => (frags < MAX_FRAGS ? ++frags > 0 : false) },
   { key: '7', label: 'Smoke (V)', price: 300, give: () => (smokes < MAX_SMOKES ? ++smokes > 0 : false) },
+  { key: '8', label: 'RPG', price: WEAPONS.rpg.price, give: giveGun(WEAPONS.rpg) },
+  {
+    key: '9', label: 'Chainsaw', price: WEAPONS.chainsaw.price,
+    give: () => {
+      melee = makeWeapon(WEAPONS.chainsaw);
+      equip(melee);
+      return true;
+    },
+  },
 ];
 
 function buy(key: string) {
@@ -283,6 +369,36 @@ let score: [number, number] = [0, 0];
 let round = 0;
 let playerDied = true; // first round starts with a fresh loadout
 let kills = 0;
+
+function pick<T>(a: T[]): T {
+  return a[Math.floor(Math.random() * a.length)];
+}
+
+const VERBS: Record<Faction, string[]> = {
+  gnome: ['gnomed', 'pruned', 'bonked', 'composted', 'mulched', 'politely removed'],
+  goblin: ['squished', 'smashed', 'yoinked', 'stewed', 'yeeted', 'nommed'],
+};
+const ROUND_SUBS = ['BUY TIME', 'POLISH YOUR HATS', 'MIND THE SPIDERS', 'FEED THE COMPOST', 'DO NOT EAT THE SLUGS', 'TRIM THE HEDGE, THEN THE ENEMY'];
+const WIN_LINES = ['ROUND WON — THE LAWN IS SAFE!', 'ROUND WON — SOMEONE GET A MOP', 'ROUND WON — HATS FOR EVERYONE!'];
+const LOSS_LINES = ['ROUND LOST — THE COMPOST WINS', 'ROUND LOST — HOW EMBARRASSING', 'ROUND LOST — THE SLUGS ARE LAUGHING'];
+const DEATH_LINES = ['YOU HAVE BEEN COMPOSTED', 'OH NO, YOUR HAT!', 'RIP. FLOWERS WILL BE PLANTED', 'WELL, THAT HAPPENED'];
+
+/** You pass wind (goblins) or sneeze (gnomes) every now and then, which gives your position away. */
+let playerGasT = 35 + Math.random() * 40;
+function playerGas() {
+  if (faction === 'goblin') {
+    sound.fart(1, 0);
+    fx.cloud(new THREE.Vector3(player.pos.x, 0.3, player.pos.z), 0x9bd13a, 3.2);
+    banner(pick(['BRAAAP!', 'OOPS.', 'THE SMELL!']), 1.2);
+    alertEnemiesNear(player.pos, 0, 16);
+  } else {
+    sound.sneeze(1, 0);
+    player.shake = Math.max(player.shake, 0.5);
+    player.pitch -= 0.06;
+    banner('ACHOO!', 1);
+    alertEnemiesNear(player.pos, 0, 22);
+  }
+}
 
 function shuffled<T>(a: T[]): T[] {
   const r = a.slice();
@@ -312,6 +428,11 @@ function startRound() {
 
   grenades.clear();
   fx.clearLasers();
+  fx.clearGore();
+  critters.clear();
+  critterT = 8;
+  queenSpawned = false;
+  bugBannerShown = false;
   world.restore(); // everything broken last round is back
   nav.rebuild(world);
   navDirty = false;
@@ -319,6 +440,7 @@ function startRound() {
     frags = 0;
     smokes = 0;
     primary = null;
+    melee = null;
     player.armor = 0;
     equip(pistol);
     applyClassKit();
@@ -333,7 +455,8 @@ function startRound() {
   player.frozen = true;
   friends().forEach((b, i) => b.spawn(south[i + 1], nav.randomFreePoint(18)));
   enemies().forEach((b, i) => b.spawn(north[i], nav.randomFreePoint(18)));
-  banner(`ROUND ${round} — BUY TIME`, 2.5);
+  playerGasT = 35 + Math.random() * 40;
+  banner(`ROUND ${round} — ${pick(ROUND_SUBS)}`, 2.5);
 }
 
 function endRound(winner: Team, why = '') {
@@ -343,12 +466,12 @@ function endRound(winner: Team, why = '') {
   buyOpen = false;
   score[winner]++;
   money = Math.min(MAX_MONEY, money + (winner === 0 ? WIN_BONUS : LOSS_BONUS));
-  const msg = winner === 0 ? 'ROUND WON' : 'ROUND LOST';
+  const msg = winner === 0 ? pick(WIN_LINES) : pick(LOSS_LINES);
   banner(why ? `${why} — ${msg}` : msg, END_TIME - 0.5);
   if (score[winner] >= WIN_ROUNDS) {
     phase = 'matchend';
     phaseT = 6;
-    banner(winner === 0 ? 'VICTORY!' : 'DEFEAT', 5.5);
+    banner(winner === 0 ? 'VICTORY! THE GARDEN IS SAVED!' : 'DEFEAT! THE SLUGS ARE FRIENDS NOW', 5.5);
   }
 }
 
@@ -388,16 +511,22 @@ window.addEventListener('keydown', (e) => {
       throwGrenade(kind);
     }
   }
+  if (e.code === 'KeyH') {
+    fx.goreOn = !fx.goreOn;
+    try { localStorage.setItem('gs-gore', fx.goreOn ? '1' : '0'); } catch { /* ignore */ }
+    banner(fx.goreOn ? 'GORE ON' : 'GORE OFF', 1);
+  }
   if (e.code === 'KeyM') {
     sound.tauntsOn = !sound.tauntsOn;
     if (!sound.tauntsOn) sound.stopTaunts();
     banner(sound.tauntsOn ? 'GNOME VOICES ON' : 'GNOME VOICES OFF', 1);
   }
-  const m = /^Digit([1-7])$/.exec(e.code);
+  const m = /^Digit([1-9])$/.exec(e.code);
   if (m && player.alive) {
     if (buyOpen && phase === 'freeze') buy(m[1]);
     else if (m[1] === '1' && primary) equip(primary);
     else if (m[1] === '2') equip(pistol);
+    else if (m[1] === '3' && melee) equip(melee);
   }
 });
 // `locked` means "the game is running". Normally that follows pointer lock, but if the browser
@@ -406,7 +535,7 @@ let fallback = false;
 function setRunning(on: boolean) {
   locked = on;
   elOverlay.style.display = on ? 'none' : 'flex';
-  if (!on) { firing = false; scopeHeld = false; elMsg.textContent = 'Paused — click to resume'; }
+  if (!on) { firing = false; scopeHeld = false; sound.saw(false, false); elMsg.textContent = 'Paused — click to resume'; }
 }
 function startFallback() {
   if (locked) return;
@@ -442,6 +571,7 @@ function setFaction(f: Faction) {
   camera.remove(current.model);
   pistol = makeWeapon(WEAPONS.pistol);
   primary = null;
+  melee = null;
   current = pistol;
   camera.add(current.model);
   buildBots();
@@ -499,8 +629,86 @@ function throwGrenade(kind: GrenadeKind) {
 
 const baseDir = new THREE.Vector3();
 
+function creditCritter(k: Critter) {
+  money = Math.min(MAX_MONEY, money + 75);
+  feedPush(`You squashed ${k.displayName}`, '#c8e07a');
+}
+
+function creditKill(victim: Bot, head: boolean) {
+  kills++;
+  money = Math.min(MAX_MONEY, money + KILL_BONUS);
+  feedPush(`You ${pick(VERBS[faction])} ${victim.name}${head ? ' ★' : ''}`, '#ffe08a');
+}
+
+/** Chainsaw: a short, wide cut straight ahead. Very messy. */
+function meleeAttack(def: WeaponDef) {
+  camera.updateMatrixWorld();
+  player.eyePos(origin);
+  camera.getWorldDirection(dir);
+  const range = def.melee ?? 2.5;
+  const wh = world.raycastHit(origin, dir, range);
+  let tBest = wh.t;
+  let hitBot: Bot | null = null;
+  let zone: 'head' | 'body' | 'hat' = 'body';
+  for (const b of bots) {
+    if (b.team !== 1) continue;
+    const h = b.rayHit(origin, dir);
+    if (h && h.t < tBest && h.t <= range) { tBest = h.t; hitBot = b; zone = h.zone; }
+  }
+  let hitCritter: Critter | null = null;
+  for (const k of critters.list) {
+    const ct = k.rayHit(origin, dir);
+    if (ct !== null && ct <= range && ct < tBest) { tBest = ct; hitCritter = k; hitBot = null; }
+  }
+  const end = origin.clone().addScaledVector(dir, Number.isFinite(tBest) ? tBest : range);
+  if (hitCritter) {
+    const k = hitCritter as Critter;
+    sound.squelch(0.8, 0);
+    player.shake = Math.max(player.shake, 0.2);
+    if (k.damage(def.body * 1.6, player.pos, 'melee')) creditCritter(k);
+  } else if (hitBot) {
+    const victim = hitBot as Bot;
+    if (zone === 'hat') {
+      if (victim.knockHat(dir, 1.2)) {
+        sound.bonk();
+        Bot.onEvent?.('hat', victim);
+      }
+    } else {
+      const head = zone === 'head';
+      const killed = victim.damage(head ? def.head : def.body, player.pos, 'melee');
+      sound.squelch(0.8, 0);
+      player.shake = Math.max(player.shake, 0.25);
+      marker(head, killed);
+      if (killed) creditKill(victim, head);
+    }
+  } else if (Number.isFinite(tBest) && wh.collider?.group) {
+    world.damage(wh.collider.group, def.body * 2.5, end); // it chews through scenery
+    fx.burst(end, 0xffd060, 4, 5, 1);
+    sound.chunk(0.5);
+    player.shake = Math.max(player.shake, 0.1);
+  }
+  if (wh.glass?.group && wh.glassT <= range) world.damage(wh.glass.group, 99, end);
+  for (const b of enemies()) if (!b.dead && b.pos.distanceTo(player.pos) < 28 && Math.random() < 0.15) b.hear(player.pos); // it's loud
+}
+
+function fireRocket() {
+  camera.updateMatrixWorld();
+  player.eyePos(origin);
+  camera.getWorldDirection(baseDir);
+  current.muzzle.getWorldPosition(muzzleW);
+  const hit = world.raycast(origin, baseDir, 120);
+  const aimAt = origin.clone().addScaledVector(baseDir, Number.isFinite(hit) ? hit : 120);
+  const d = aimAt.sub(muzzleW).normalize();
+  grenades.rocket(muzzleW, d, { team: 0, name: 'You', isPlayer: true });
+  player.pitch += 0.09;
+  player.shake = Math.max(player.shake, 0.35);
+  alertEnemiesNear(player.pos, 0, 50);
+}
+
 function fire() {
   const def = current.def;
+  if (def.melee) { meleeAttack(def); return; }
+  if (def.projectile === 'rocket') { fireRocket(); return; }
   camera.updateMatrixWorld();
   player.eyePos(origin);
   camera.getWorldDirection(baseDir);
@@ -513,6 +721,7 @@ function fire() {
   let anyHit = false;
   let anyHead = false;
   let anyKill = false;
+  let anyHat = false;
   for (let i = 0; i < pellets; i++) {
     dir.copy(baseDir)
       .addScaledVector(right, (Math.random() - 0.5) * 2 * spread)
@@ -522,11 +731,16 @@ function fire() {
     const wh = world.raycastHit(origin, dir, 200);
     let tBest = wh.t;
     let hitBot: Bot | null = null;
-    let zone: 'head' | 'body' = 'body';
+    let zone: 'head' | 'body' | 'hat' = 'body';
     for (const b of bots) {
       if (b.team !== 1) continue; // bullets pass through teammates
       const h = b.rayHit(origin, dir);
       if (h && h.t < tBest) { tBest = h.t; hitBot = b; zone = h.zone; }
+    }
+    let hitCritter: Critter | null = null;
+    for (const k of critters.list) {
+      const ct = k.rayHit(origin, dir);
+      if (ct !== null && ct < tBest) { tBest = ct; hitCritter = k; hitBot = null; }
     }
     const t = Number.isFinite(tBest) ? tBest : 120;
     const end = origin.clone().addScaledVector(dir, t);
@@ -535,19 +749,30 @@ function fire() {
     if (wh.glass?.group && wh.glassT < tBest) world.damage(wh.glass.group, def.body, end);
     if (!hitBot && wh.collider?.group) world.damage(wh.collider.group, def.body, end);
 
-    if (hitBot) {
+    if (hitCritter) {
+      const k = hitCritter as Critter;
+      const killed = k.damage(def.body * (pellets > 1 ? Math.max(0.2, 1 - t / 28) : 1), player.pos, pellets > 1 && t < 6 ? 'shotgun' : 'bullet');
+      anyHit = true;
+      if (killed) {
+        anyKill = true;
+        creditCritter(k);
+      }
+    } else if (hitBot && zone === 'hat') {
+      // shooting a hat off hurts nobody: it just goes flying
+      if ((hitBot as Bot).knockHat(dir, 1)) {
+        anyHat = true;
+        Bot.onEvent?.('hat', hitBot as Bot);
+      }
+    } else if (hitBot) {
       const victim = hitBot as Bot;
       const head = zone === 'head';
       const falloff = pellets > 1 ? Math.max(0.2, 1 - t / 28) : 1; // shotguns lose punch with range
-      const killed = victim.damage((head ? def.head : def.body) * falloff, player.pos);
-      fx.burst(end, head ? 0xffffff : 0xc42b2b, pellets > 1 ? 2 : 6);
+      const killed = victim.damage((head ? def.head : def.body) * falloff, player.pos, pellets > 1 && t < 6 ? 'shotgun' : 'bullet');
       anyHit = true;
       anyHead = anyHead || head;
       if (killed) {
         anyKill = true;
-        kills++;
-        money = Math.min(MAX_MONEY, money + KILL_BONUS);
-        feedPush(`You ▸ ${victim.name}${head ? ' ★' : ''}`, '#ffe08a');
+        creditKill(victim, head);
       }
     } else if (Number.isFinite(tBest)) {
       fx.burst(end, 0xd8b87a, pellets > 1 ? 1 : 5, 2);
@@ -558,6 +783,10 @@ function fire() {
   if (anyHit) {
     sound.hit(anyHead);
     marker(anyHead, anyKill);
+  } else if (anyHat) {
+    sound.bonk();
+    banner('HAT OFF!', 0.7);
+    marker(false, false);
   }
 
   // recoil: the player has to pull down to compensate
@@ -578,7 +807,7 @@ function renderHud(dt: number) {
   elHit.style.boxShadow = `inset 0 0 120px 30px rgba(220,0,0,${(player.hurt * 0.7).toFixed(2)})`;
   elHealth.textContent = `♥ ${Math.ceil(player.health)}${player.armor > 0 ? `   ⛨ ${Math.ceil(player.armor)}` : ''}  · ${CLASSES[playerClass].name}`;
   elAmmo.innerHTML =
-    (current.reloading ? 'RELOADING…' : `${current.def.name}  ${current.ammo} / ${current.reserve}`) +
+    (current.def.melee ? `${current.def.name}  BRRRRR` : current.reloading ? 'RELOADING…' : `${current.def.name}  ${current.ammo} / ${current.reserve}`) +
     `<div style="font-size:15px;opacity:.85;text-align:right">FRAG ${frags} [G] · SMOKE ${smokes} [V]</div>`;
   elMoney.textContent = `$${money}`;
 
@@ -647,15 +876,27 @@ function tick() {
       if (player.health < hpBefore) sound.hurt();
     } else if (wasAlive) {
       playerDied = true;
-      banner('YOU WERE FRAGGED', 2.5);
+      banner(pick(DEATH_LINES), 2.5);
       feedPush('You were fragged', '#f88');
     }
     clickQueued = false;
+    current.revving = firing && player.alive && current.def.id === 'chainsaw';
+    sound.saw(player.alive && current.def.id === 'chainsaw', current.revving);
     current.update(dt, player.alive ? player.horizSpeed : 0);
 
+    if (phase === 'end') for (const b of bots) if (b.dead) b.update(dt, ctx); // let flying corpses land
     if (phase === 'live') {
       for (const b of bots) b.update(dt, ctx);
+      critters.update(dt, critterCtx);
+      spawnCritters(dt);
       medicAura(dt);
+      if (player.alive) {
+        playerGasT -= dt;
+        if (playerGasT <= 0) {
+          playerGasT = 40 + Math.random() * 60;
+          playerGas();
+        }
+      }
       if (ROUND_TIME - phaseT > HUNT_AFTER) {
         const pressure = Math.min(1, (ROUND_TIME - phaseT - HUNT_AFTER) / 35);
         for (const b of bots) { b.hunt = true; b.pressure = pressure; }
@@ -693,7 +934,7 @@ function tick() {
 
   // spectate a living teammate after dying
   const spec = !player.alive ? friends().find((b) => !b.dead) ?? null : null;
-  for (const b of bots) b.group.visible = b !== spec;
+  for (const b of bots) b.group.visible = !b.gibbed && b !== spec;
   if (spec) {
     camera.position.set(spec.pos.x, spec.pos.y + 1.4, spec.pos.z);
     camera.rotation.set(0, spec.yaw, 0);
@@ -710,7 +951,7 @@ tick();
 
 // handy for poking at the game from the console / tests
 (window as unknown as { __gs: unknown }).__gs = {
-  world, nav, player, bots, camera, fire, buy, grenades, setFaction, setClass, ctx, setRunning: (v: boolean) => { locked = v; }, throwGrenade, giveFrags: (n: number) => { frags = n; smokes = n; }, giveMoney: (n: number) => { money = n; }, startRound, endRound, newMatch, sound,
+  world, nav, player, bots, camera, fire, buy, grenades, setFaction, setClass, ctx, critters, critterCtx, setRunning: (v: boolean) => { locked = v; }, throwGrenade, giveFrags: (n: number) => { frags = n; smokes = n; }, giveMoney: (n: number) => { money = n; }, startRound, endRound, newMatch, sound,
   get state() {
     return { phase, phaseT, score, round, money, kills, weapon: current.def.id, armor: player.armor };
   },
